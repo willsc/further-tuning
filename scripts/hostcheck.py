@@ -2,7 +2,7 @@
 """Vet a freshly launched host: keep it or recycle it.
 
 Checks:
-  osnoise  rtla osnoise on the isolated cores; worst single interruption
+  osnoise  kernel osnoise tracer on the isolated cores; worst single interruption
   smi      SMI count delta (Intel MSR 0x34) over the same window
   rtt      TCP handshake RTT to every IP behind each venue gateway name
 
@@ -14,7 +14,7 @@ Exit status: 0 keep, 1 recycle, 2 error.
 import argparse
 import json
 import os
-import shutil
+import re
 import socket
 import statistics
 import subprocess
@@ -47,38 +47,100 @@ def expand_cpus(spec):
 
 
 def read_smi(cpu):
+    """MSR_SMI_COUNT (0x34), read straight from /dev/cpu/N/msr (Intel only)."""
+    path = f"/dev/cpu/{cpu}/msr"
+    if not os.path.exists(path):
+        subprocess.run(["modprobe", "msr"], capture_output=True)
     try:
-        out = subprocess.run(["rdmsr", "-p", str(cpu), "-d", "0x34"],
-                             capture_output=True, text=True, check=True)
-        return int(out.stdout.strip())
-    except (OSError, subprocess.CalledProcessError, ValueError):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            return int.from_bytes(os.pread(fd, 8, 0x34), "little") & 0xFFFFFFFF
+        finally:
+            os.close(fd)
+    except OSError:
         return None
 
 
+def tracefs():
+    for d in ("/sys/kernel/tracing", "/sys/kernel/debug/tracing"):
+        if os.path.exists(f"{d}/available_tracers"):
+            return d
+    subprocess.run(["mount", "-t", "tracefs", "nodev", "/sys/kernel/tracing"],
+                   capture_output=True)
+    if os.path.exists("/sys/kernel/tracing/available_tracers"):
+        return "/sys/kernel/tracing"
+    raise RuntimeError("tracefs not available (run as root; kernel needs CONFIG_TRACING)")
+
+
+# <task>-<pid> [cpu] flags timestamp: RUNTIME NOISE %AVAIL MAX_SINGLE HW NMI IRQ SIRQ THREAD
+OSNOISE_LINE = re.compile(
+    r"\[(\d+)\]\s+\S+\s+[\d.]+:\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)"
+    r"\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
+
+
 def run_osnoise(cpus, seconds):
-    """Returns {cpu: {...}} from `rtla osnoise top`; times are in us."""
-    out = subprocess.run(
-        ["rtla", "osnoise", "top", "-c", cpus, "-d", f"{seconds}s", "-q"],
-        capture_output=True, text=True)
-    if out.returncode:
-        err = (out.stderr + out.stdout).strip()
-        if "not found for kernel" in err:
-            raise RuntimeError(
-                "rtla is not installed for this kernel. Install it with:\n"
-                f"  sudo apt install linux-tools-{os.uname().release}\n"
-                "or run: sudo scripts/prereqs.sh install")
-        raise RuntimeError(f"rtla osnoise failed: {err}")
+    """Run the kernel osnoise tracer on `cpus` for `seconds` via tracefs
+    (what `rtla osnoise top` does, without needing rtla installed).
+    Returns {cpu: {...}}; times are in us."""
+    t = tracefs()
+    with open(f"{t}/available_tracers") as f:
+        if "osnoise" not in f.read().split():
+            raise RuntimeError("kernel has no osnoise tracer (CONFIG_OSNOISE_TRACER)")
+
+    def rd(name):
+        with open(f"{t}/{name}") as f:
+            return f.read().strip()
+
+    def wr(name, val):
+        with open(f"{t}/{name}", "w") as f:
+            f.write(str(val))
+
+    old = {k: rd(k) for k in ("current_tracer", "tracing_on", "osnoise/cpus",
+                              "osnoise/period_us", "osnoise/runtime_us")}
+    if old["current_tracer"] not in ("nop", "osnoise"):
+        raise RuntimeError(f"tracer '{old['current_tracer']}' is in use; "
+                           f"stop it first (echo nop > {t}/current_tracer)")
+    try:
+        wr("current_tracer", "nop")
+        wr("osnoise/cpus", cpus)
+        wr("osnoise/period_us", 1000000)
+        wr("osnoise/runtime_us", 1000000)       # sample 100% of each period
+        wr("trace", "")                         # clear the buffer
+        wr("tracing_on", 1)
+        wr("current_tracer", "osnoise")
+        time.sleep(seconds)
+        wr("tracing_on", 0)
+        trace = rd("trace")
+    finally:
+        wr("current_tracer", "nop")
+        for k in ("osnoise/cpus", "osnoise/period_us", "osnoise/runtime_us",
+                  "tracing_on"):
+            try:
+                wr(k, old[k])
+            except OSError:
+                pass
+
     res = {}
-    for line in out.stdout.splitlines():
-        f = line.split()
-        # CPU #Period Runtime Noise %Aval MaxNoise MaxSingle HW NMI IRQ Softirq Thread
-        if len(f) == 12 and f[0].isdigit() and f[1].startswith("#"):
-            res[int(f[0])] = {
-                "noise_us": int(f[3]), "avail_pct": float(f[4]),
-                "max_noise_us": int(f[5]), "max_single_us": int(f[6]),
-                "hw": int(f[7]), "nmi": int(f[8]), "irq": int(f[9]),
-                "softirq": int(f[10]), "thread": int(f[11]),
-            }
+    for line in trace.splitlines():
+        m = OSNOISE_LINE.search(line)
+        if not m:
+            continue
+        cpu = int(m[1])
+        runtime, noise, max_single = int(m[2]), int(m[3]), int(m[5])
+        r = res.setdefault(cpu, {"runtime_us": 0, "noise_us": 0, "max_noise_us": 0,
+                                 "max_single_us": 0, "hw": 0, "nmi": 0, "irq": 0,
+                                 "softirq": 0, "thread": 0})
+        r["runtime_us"] += runtime
+        r["noise_us"] += noise
+        r["max_noise_us"] = max(r["max_noise_us"], noise)
+        r["max_single_us"] = max(r["max_single_us"], max_single)
+        for k, i in (("hw", 6), ("nmi", 7), ("irq", 8), ("softirq", 9), ("thread", 10)):
+            r[k] += int(m[i])
+    for r in res.values():
+        r["avail_pct"] = round(100 * (1 - r["noise_us"] / r["runtime_us"]), 5) \
+            if r["runtime_us"] else None
+    if not res:
+        raise RuntimeError("osnoise produced no samples (are the cpus online?)")
     return res
 
 
@@ -173,8 +235,8 @@ def main():
     }
     reasons = []
 
-    if a.cpus and shutil.which("rtla") is None:
-        print("error: rtla not found; run: sudo scripts/prereqs.sh install", file=sys.stderr)
+    if a.cpus and os.geteuid():
+        print("error: the noise/SMI checks need root (sudo)", file=sys.stderr)
         return 2
     if a.cpus:
         cpus = expand_cpus(a.cpus)
@@ -197,7 +259,7 @@ def main():
                 reasons.append(f"cpu {cpu} max single noise {n['max_single_us']} us "
                                f"> {a.max_single_us}")
         if rec["smi_delta"] is None:
-            print("  smi: unavailable (not Intel, or msr module/rdmsr missing)")
+            print("  smi: unavailable (not Intel, or msr module missing)")
         else:
             print(f"  smi: {rec['smi_delta']} in {a.duration}s")
             if rec["smi_delta"] > a.max_smi:

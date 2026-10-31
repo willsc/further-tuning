@@ -2,8 +2,11 @@
 # Check (and optionally install) everything the tools and scripts need.
 #
 #   prereqs.sh            report what is present / missing
-#   prereqs.sh install    install missing packages (apt or dnf), load msr,
-#                         mount tracefs, then re-check
+#   prereqs.sh install    one-shot host setup: install packages (apt or dnf),
+#                         load msr, mount tracefs, reserve huge pages, build
+#                         bin/, then re-check
+#
+#   HUGEPAGES=N           2 MB pages to reserve on install (default 2048 = 4 GiB)
 #
 # Exit status: 0 all required items present, 1 something required missing.
 set -uo pipefail
@@ -29,8 +32,8 @@ install() {
 		DEBIAN_FRONTEND=noninteractive apt-get install -y \
 			build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 python3 \
 			linux-tools-common
-		# Kernel-specific tools (rtla, turbostat). On AWS kernels also pull
-		# the meta package so future kernel updates keep them.
+		# Kernel-specific tools (turbostat, optional). hostcheck.py drives the
+		# osnoise tracer itself, so rtla is not needed (AWS kernels lack it).
 		if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-tools-$kver"; then
 			echo "warning: linux-tools-$kver not in the archive; trying generic meta packages" >&2
 		fi
@@ -44,16 +47,21 @@ install() {
 	elif command -v dnf >/dev/null; then
 		dnf install -y gcc make glibc-devel kernel-headers msr-tools ethtool iproute python3 \
 			kernel-tools || true
-		dnf install -y rtla || true
 		dnf install -y accel-config 2>/dev/null || true
 	else
 		echo "no apt-get or dnf; install the packages in RUNNING.md by hand" >&2
 		exit 2
 	fi
 	modprobe msr 2>/dev/null || true
-	if ! [[ -d /sys/kernel/tracing/events ]]; then
+	if ! [[ -e /sys/kernel/tracing/available_tracers ]]; then
 		mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null || true
 	fi
+	hp=${HUGEPAGES:-2048}
+	if (( $(cat /proc/sys/vm/nr_hugepages) < hp )); then
+		echo "$hp" > /proc/sys/vm/nr_hugepages
+	fi
+	echo "huge pages: $(awk '/HugePages_Total/ {print $2}' /proc/meminfo) reserved"
+	make -C "$(dirname "$0")/.." || missing=1
 	echo
 }
 
@@ -70,15 +78,19 @@ command -v make >/dev/null && ok make || bad make "build-essential"
 
 echo "hostcheck.py:"
 command -v python3 >/dev/null && ok python3 || bad python3
-tool_works rtla && ok rtla \
-	|| bad rtla "apt install linux-tools-$kver (or linux-tools-aws)"
+osn=0
+for d in /sys/kernel/tracing /sys/kernel/debug/tracing; do
+	grep -qw osnoise "$d/available_tracers" 2>/dev/null && osn=1
+done
+(( osn )) && ok "osnoise tracer" \
+	|| bad "osnoise tracer" "run as root with tracefs mounted; kernel needs CONFIG_OSNOISE_TRACER"
 if [[ -d /sys/kernel/tracing/events || -d /sys/kernel/debug/tracing/events ]]; then
 	ok tracefs
 else
 	bad tracefs "mount -t tracefs nodev /sys/kernel/tracing"
 fi
 if grep -q -m1 GenuineIntel /proc/cpuinfo; then
-	command -v rdmsr >/dev/null && ok rdmsr || bad rdmsr "msr-tools (SMI count, prefetch toggle)"
+	command -v rdmsr >/dev/null && ok rdmsr || bad rdmsr "msr-tools (cores.sh prefetch toggle)"
 	[[ -e /dev/cpu/0/msr ]] && ok "msr module" || bad "msr module" "modprobe msr"
 else
 	opt rdmsr "not Intel: SMI count and prefetch toggle unavailable"
@@ -96,8 +108,8 @@ hp=$(awk '/HugePages_Free/ {print $2}' /proc/meminfo)
 	|| opt "huge pages" "0 free: echo 2048 > /proc/sys/vm/nr_hugepages"
 ls /dev/ptp* >/dev/null 2>&1 && ok PHC "$(ls /dev/ptp* | tr '\n' ' ')" \
 	|| opt PHC "none: see RUNNING.md 3.3 (needed by wire2app)"
-[[ -x bin/corelat || -x "$(dirname "$0")/../bin/corelat" ]] && ok "built binaries" \
-	|| opt "built binaries" "run make"
+[[ -x "$(dirname "$0")/../bin/corelat" ]] && ok "built binaries" \
+	|| bad "built binaries" "run make"
 
 echo
 if (( missing )); then

@@ -24,23 +24,25 @@ check in order. For how to *interpret* the results, see the guides in
 
 ```sh
 sudo apt install build-essential msr-tools ethtool iproute2 python3 \
-                 linux-tools-common linux-tools-$(uname -r)    # turbostat, rtla
+                 linux-tools-common linux-tools-$(uname -r)    # turbostat
 ```
 
 | Needed for | Package / tool |
 |---|---|
 | Building | `gcc`, `make`, kernel UAPI headers (`linux-libc-dev`) |
-| `hostcheck.py` noise check | `rtla` (in linux-tools) |
-| SMI count, prefetcher toggle | `rdmsr` / `wrmsr` (`msr-tools`), Intel only |
+| `hostcheck.py` noise check | kernel osnoise tracer + tracefs (no `rtla` needed) |
+| SMI count | `msr` kernel module, Intel only |
+| Prefetcher toggle | `rdmsr` / `wrmsr` (`msr-tools`), Intel only |
 | Turbo headroom check | `turbostat` |
 | ENA PHC enable | `devlink` (`iproute2`) |
 | DSA rows in `llcpollute` | `accel-config` (optional, Intel Sapphire Rapids or newer) |
 
-Or let the script check and install everything for the running kernel:
+Or do the whole setup in one go (packages, `msr` module, tracefs, 2048 huge
+pages, `make`):
 
 ```sh
-scripts/prereqs.sh              # report what's missing
-sudo scripts/prereqs.sh install # apt/dnf install, modprobe msr, mount tracefs
+make setup                      # = sudo scripts/prereqs.sh install
+scripts/prereqs.sh              # re-check any time
 ```
 
 ---
@@ -339,7 +341,7 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 | `wire2app`: `could not enable RX hardware timestamps` | Run as root; check `ethtool -T IFACE` supports hardware-receive. |
 | `wire2app`: `no PHC offset` | PHC not enabled. Redo [3.3](#33-enable-the-ena-phc-and-hardware-timestamps-for-wire2app). Only `kern2app` is reported until then. |
 | `wire2app`: `pkts` is 0 for a core | No traffic reached the port within `-T`. Check the sender, security groups, and `ss -ulpn`. |
-| `hostcheck.py`: `rtla not found for kernel …` | Ubuntu's `rtla` is a wrapper; install `linux-tools-$(uname -r)` (and `linux-tools-aws`), or `sudo scripts/prereqs.sh install`. |
-| `hostcheck.py`: `rtla osnoise failed` | Run as root; install linux-tools for your kernel; debugfs/tracefs must be mounted. |
+| `hostcheck.py`: `kernel has no osnoise tracer` | Kernel built without `CONFIG_OSNOISE_TRACER`; use a stock Ubuntu/AL2023 kernel. |
+| `hostcheck.py`: `tracer '…' is in use` | Another tracer is active; `echo nop > /sys/kernel/tracing/current_tracer`. |
 | `hostcheck.py`: `smi: unavailable` | AMD (no MSR 0x34), or run `modprobe msr`. |
 | `hostcheck.py`: `0/20 ok` for a gateway | Port closed/filtered from this host. Use the venue's real order-entry or feed port. |

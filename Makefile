@@ -12,7 +12,11 @@ bin/%: src/%.c src/common.h src/fastcopy.h | bin
 bin:
 	mkdir -p bin
 
+# One-shot host setup: packages, msr, tracefs, huge pages, build.
+setup:
+	sudo scripts/prereqs.sh install
+
 clean:
 	rm -rf bin
 
-.PHONY: all clean
+.PHONY: all clean setup
