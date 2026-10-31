@@ -216,7 +216,8 @@ sudo scripts/tune.sh --wire2app 9000    # also measure NIC-to-app (step 5) on th
 source tune.env                         # POLLER BEST LOGGER HOUSEKEEPING IFACE ...
 ```
 
-It picks the top `corelat` row as `BEST`, reserves huge pages if needed, prints
+It picks `BEST` as the lowest-latency `corelat` row within 5% of the fastest
+clock (so a slow E-core or throttled core never wins), reserves huge pages if needed, prints
 each tool's output as it goes, and writes a report with charts. See
 [Viewing results](#viewing-results).
 
@@ -260,11 +261,12 @@ bin/corelat -b $POLLER -c $HOT          # run it twice; ignore gaps smaller than
 bin/corelat -b $POLLER -c $HOT -s 2g    # optional: DRAM latency instead of L3
 ```
 
-Takes a few seconds per core. Pick the top row (lowest `c2c_ns_from_base`,
-then `chase_ns`, then highest `clock_GHz`) and record it:
+Takes a few seconds per core. Pick the highest row (lowest `c2c_ns_from_base`)
+whose `clock_GHz` is within 5% of the fastest core's, and record it. Skip rows
+with a much lower clock: they are E-cores on hybrid CPUs, or throttled.
 
 ```sh
-BEST=3                                   # the top row's cpu
+BEST=3                                   # the chosen row's cpu
 ```
 
 → [docs/reading-corelat.md](docs/reading-corelat.md)
@@ -452,7 +454,7 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 | `scripts/prereqs.sh` shows `[MISS]` | Run `make setup`; the line says which package or step is missing. |
 | `cores.sh layout`: `no isolated cores found` | Nothing isolated at boot. See [4.5](#45-core-layout-from-the-grub-isolated-cores), or set `ISOLATED=` to try a layout. |
 | `turbostat`: `get_rapl_counters: Assertion ... failed` | A turbostat bug with RAPL on some many-core CPUs. Not needed: use `bin/corelat -b $POLLER -c $BEST` and read `clock_GHz`. |
-| `llcpollute` prints its usage | A variable was empty (usually `$BEST`). Use `sudo scripts/tune.sh`, or set `BEST=` from the top `corelat` row. |
+| `llcpollute` prints its usage | A variable was empty (usually `$BEST`). Use `sudo scripts/tune.sh`, or set `BEST=` from `corelat` (step 1). |
 | `$POLLER` / `$HOT` empty in a command | Run `eval "$(scripts/cores.sh layout --env)"` in this shell first. |
 | `cannot pin to cpu N` | CPU is offline or outside your cgroup/cpuset. Check `cat /sys/devices/system/cpu/online`. |
 | `corelat` row has much lower clock / higher `chase_ns` than neighbours | Something else runs on that core. Check `top -1` / `ps -eLo psr,comm`. |

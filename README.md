@@ -78,7 +78,9 @@ sudo scripts/tune.sh [--no-offline] [--no-llc] [--wire2app PORT]
 It:
 
 1. Derives the roles above.
-2. Ranks the hot candidates with `corelat` and picks the top row.
+2. Ranks the hot candidates with `corelat` and picks the lowest-latency core
+   whose clock is within 5% of the fastest. That skips slow cores, such as
+   E-cores on hybrid CPUs or a throttled core.
 3. Checks the logger core against it with `llcpollute`.
 4. Offlines every other core, including HT siblings of isolated cores.
 5. Re-measures the hot core's clock.
@@ -97,7 +99,9 @@ Each run saves its raw output and an HTML report with charts to
 `results/index.html` compares every run. The report shows the chosen hot core,
 core-to-core latency for every candidate, logger impact per copy method, the
 clock after offlining and, if captured, NIC-to-app latency, each with a table
-view. Reports are single self-contained files with no network dependencies.
+view. Without NIC hardware timestamps (PHC not enabled), it shows kernel-to-app
+latency instead. Reports are single self-contained files with no network
+dependencies.
 
 View them from your laptop over SSH:
 
@@ -118,6 +122,24 @@ sudo scripts/tune.sh --wire2app 9000            # on this host
 ```
 
 The same steps by hand are in [RUNNING.md](RUNNING.md#5-run-order).
+
+## Example run
+
+A real `tune.sh` run on an Intel Core Ultra 9 285H (16 CPUs, no hyperthreads),
+with `ISOLATED=2-7` standing in for GRUB isolation and loopback test traffic
+for `--wire2app`:
+
+| Step | Result |
+|---|---|
+| Layout | poller 2, hot candidates 3–6, logger 7, housekeeping 0–1 and 8–15 |
+| Hot core | cpu 5, 39.8 ns from the poller (others 41–49 ns) |
+| Logger impact (victim p99) | idle 15.8 ns, `memcpy` 42.3 ns, `nt` 207.6 ns |
+| After offlining 3, 4, 6 | clock 4.98 → 5.06 GHz |
+| Kernel to app p50 | 1,412 ns (loopback, so no NIC hardware stamps) |
+
+On this chip `nt` hurt the hot core far more than `memcpy`, so measure it on
+your own hardware rather than assuming. On an earlier pass the
+lowest-latency core was a 3.35 GHz E-core; the clock rule now skips it.
 
 ## Docs
 
