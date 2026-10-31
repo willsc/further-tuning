@@ -13,6 +13,7 @@ evicting it, and measuring the real NIC-to-app path.
 | `bin/wire2app` | NIC hardware RX stamp → app latency on each candidate core (has the final say). |
 | `src/fastcopy.h` | `nt_copy()` and `dsa_memmove()` for the logger, header-only. |
 | `scripts/tune.sh` | One-shot: layout from the GRUB isolated cores, pick the hot core, check the logger, offline the rest. |
+| `scripts/report.py` | HTML reports with charts from `tune.sh` results, and a page comparing runs; `--serve` to view over SSH. |
 | `scripts/prereqs.sh` | Check prerequisites, or `install` for one-shot host setup (also `make setup`). |
 | `scripts/cores.sh` | Derive CPU roles from the GRUB isolated cores, offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
@@ -58,16 +59,34 @@ It:
 4. Offlines every other core, including un-isolated HT siblings.
 5. Re-measures the hot core's clock.
 
-It also reserves huge pages if they were lost on reboot, and saves the result
-to `tune.env`. Use `--no-offline` to only measure; `sudo scripts/cores.sh online`
-undoes step 4.
+It also reserves huge pages if they were lost on reboot. Use `--no-offline` to
+only measure; `sudo scripts/cores.sh online` undoes step 4.
 
-Then confirm on the real path, with market data or test traffic flowing:
+## Results and reports
+
+Each run saves its raw output and an HTML report with charts to
+`results/<time>-<host>/`; `results/latest` points at the newest, and
+`results/index.html` compares every run. The report shows the chosen hot core,
+core-to-core latency for every candidate, logger impact per copy method, the
+clock after offlining and, if captured, NIC-to-app latency, each with a table
+view. Reports are single self-contained files with no network dependencies.
+
+View them from your laptop over SSH:
 
 ```sh
-bin/wire2app -S 10.0.0.5:9000 -r 20000                               # on another host
-source tune.env
-sudo bin/wire2app -i $IFACE -p 9000 -c $BEST -H ${HOUSEKEEPING%%[-,]*}   # on this host
+scripts/report.py --serve 8080                 # on the host
+ssh -L 8080:127.0.0.1:8080 <user>@<host>       # on your laptop, then open http://localhost:8080/
+```
+
+Or copy them off: `scp -r <host>:further-tuning/results .`. Rebuild every
+report after editing or adding files with `scripts/report.py`.
+
+Add the real NIC-to-app path to the run and the report, with market data or
+test traffic flowing:
+
+```sh
+bin/wire2app -S 10.0.0.5:9000 -r 20000          # on another host
+sudo scripts/tune.sh --wire2app 9000            # on this host
 ```
 
 The same steps by hand are in [RUNNING.md](RUNNING.md#5-run-order).

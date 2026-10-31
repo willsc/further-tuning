@@ -211,12 +211,44 @@ echo "poller=$POLLER hot=$HOT logger=$LOGGER"
 **Automated:** steps 1–3 (plus the clock check) in one go:
 
 ```sh
-sudo scripts/tune.sh              # --no-offline to only measure, --no-llc to skip llcpollute
-source tune.env                   # POLLER BEST LOGGER HOUSEKEEPING IFACE ... for step 5
+sudo scripts/tune.sh                    # --no-offline to only measure, --no-llc to skip llcpollute
+sudo scripts/tune.sh --wire2app 9000    # also measure NIC-to-app (step 5) on the chosen core
+source tune.env                         # POLLER BEST LOGGER HOUSEKEEPING IFACE ...
 ```
 
-It picks the top `corelat` row as `BEST`, reserves huge pages if needed, and
-prints each tool's output as it goes. Then do step 4 (optional) and step 5.
+It picks the top `corelat` row as `BEST`, reserves huge pages if needed, prints
+each tool's output as it goes, and writes a report with charts. See
+[Viewing results](#viewing-results).
+
+### Viewing results
+
+Each `tune.sh` run writes to `results/<time>-<host>/`:
+
+| File | Contents |
+|---|---|
+| `report.html` | Charts and tables for this run (self-contained, works offline) |
+| `corelat.txt`, `llcpollute.txt`, `corelat_after.txt`, `wire2app.txt` | Raw tool output |
+| `layout.env`, `meta.env` | Core roles, host, kernel, CPU model, instance type |
+
+`results/latest` links to the newest run, and `results/index.html` lists every
+run with its headline numbers and a chart comparing them.
+
+To view from your laptop:
+
+```sh
+scripts/report.py --serve 8080                 # on the host (binds 127.0.0.1 only)
+ssh -L 8080:127.0.0.1:8080 <user>@<host>       # on your laptop; open http://localhost:8080/
+```
+
+Or `scp -r <host>:further-tuning/results .` and open the files locally.
+
+To add output you ran by hand, such as `wire2app` from step 5, save it into
+the run folder under the name above and rebuild:
+
+```sh
+sudo bin/wire2app ... | tee results/latest/wire2app.txt
+scripts/report.py results/latest
+```
 
 **By hand:** run these in a shell where you have already run
 `eval "$(scripts/cores.sh layout --env)"`.
@@ -371,11 +403,20 @@ sudo HUGEPAGES=4096 scripts/prereqs.sh install   # reserve 8 GiB instead of 4
 ### `scripts/tune.sh`
 
 ```sh
-sudo scripts/tune.sh [--no-offline] [--no-llc]
+sudo scripts/tune.sh [--no-offline] [--no-llc] [--wire2app PORT]
 ```
 
-Runs layout → `corelat` → `llcpollute` → `offline auto BEST` → clock check, and
-writes `tune.env`. Uses the same `ISOLATED=` / `IFACE=` overrides as `cores.sh layout`.
+Runs layout → `corelat` → `llcpollute` → `offline auto BEST` → clock check →
+(`--wire2app PORT`) `wire2app` → report, saving everything to `results/<time>-<host>/`
+and writing `tune.env`. Uses the same `ISOLATED=` / `IFACE=` overrides as `cores.sh layout`.
+
+### `scripts/report.py`
+
+```sh
+scripts/report.py                     # rebuild every run's report.html and results/index.html
+scripts/report.py results/latest      # rebuild one run
+scripts/report.py --serve [PORT]      # rebuild, then serve results/ on 127.0.0.1:PORT (default 8080)
+```
 
 ### `scripts/cores.sh`
 

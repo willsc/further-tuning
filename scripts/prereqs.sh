@@ -30,7 +30,7 @@ install() {
 	if command -v apt-get >/dev/null; then
 		apt-get update
 		DEBIAN_FRONTEND=noninteractive apt-get install -y \
-			build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 \
+			build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 python3 curl \
 			linux-tools-common
 		# Kernel-specific tools (turbostat, optional).
 		if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-tools-$kver"; then
@@ -44,7 +44,7 @@ install() {
 		esac
 		apt-get install -y accel-config 2>/dev/null || true   # optional (DSA)
 	elif command -v dnf >/dev/null; then
-		dnf install -y gcc make glibc-devel kernel-headers msr-tools ethtool iproute \
+		dnf install -y gcc make glibc-devel kernel-headers msr-tools ethtool iproute python3 curl \
 			kernel-tools || true
 		dnf install -y accel-config 2>/dev/null || true
 	else
@@ -79,6 +79,9 @@ if grep -q -m1 GenuineIntel /proc/cpuinfo; then
 else
 	opt rdmsr "not Intel: prefetch toggle unavailable"
 fi
+
+echo "reports (tune.sh, report.py):"
+command -v python3 >/dev/null && ok python3 || bad python3 "python3"
 
 echo "other tools:"
 tool_works turbostat && ok turbostat || opt turbostat "linux-tools-$kver (turbo headroom check)"
