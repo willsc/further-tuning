@@ -12,12 +12,22 @@ evicting it, and measuring the real NIC-to-app path.
 | `bin/llcpollute` | Does the logger's copy loop evict the hot core's L3 data, and does `nt_copy()` or DSA fix it? |
 | `bin/wire2app` | NIC hardware RX stamp → app latency on each candidate core (has the final say). |
 | `src/fastcopy.h` | `nt_copy()` and `dsa_memmove()` for the logger, header-only. |
-| `scripts/tune.sh` | One-shot: layout from the GRUB isolated cores, pick the hot core, check the logger, offline the rest. |
+| `scripts/tune.sh` | One-shot: layout from the GRUB isolated cores, pick the hot core, check the logger, offline the rest, write a report. |
 | `scripts/report.py` | HTML reports with charts from `tune.sh` results, and a page comparing runs; `--serve` to view over SSH. |
 | `scripts/prereqs.sh` | Check prerequisites, or `install` for one-shot host setup (also `make setup`). |
 | `scripts/cores.sh` | Derive CPU roles from the GRUB isolated cores, offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
 **→ Step-by-step setup and usage: [RUNNING.md](RUNNING.md)**
+
+## Quick start
+
+```sh
+git clone https://github.com/willsc/further-tuning.git && cd further-tuning
+make setup                          # packages, msr, huge pages, build (rerun after each boot)
+scripts/cores.sh layout             # check the CPU roles taken from your GRUB isolated cores
+sudo scripts/tune.sh                # measure, pick the hot core, offline the rest, write a report
+scripts/report.py --serve 8080      # view: ssh -L 8080:127.0.0.1:8080 <user>@<host>, open localhost:8080
+```
 
 ## Setup
 
@@ -43,24 +53,42 @@ make
 
 ## Workflow
 
-CPU roles come from the cores isolated on the GRUB command line (`isolcpus=` /
-`nohz_full=`). One command does the whole sequence:
+CPU roles come from the cores isolated on the GRUB command line (`isolcpus=`,
+or `nohz_full=` when that's absent). If nothing is isolated yet, add for example
+`isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7` to `GRUB_CMDLINE_LINUX` in
+`/etc/default/grub`, run `sudo update-grub` and reboot. Isolate cores that share
+an L3 with each other: a hot core on another L3 (another CCD on AMD) is about
+10× slower to reach from the poller.
+
+`cores.sh layout` assigns the roles:
+
+| Role | Rule |
+|---|---|
+| Housekeeping | Every online CPU that isn't isolated or an HT sibling of an isolated core |
+| Poller | First isolated core on the NIC's NUMA node |
+| Logger | Last isolated core sharing the poller's L3 (3+ isolated cores) |
+| Hot candidates | The remaining isolated cores, one thread per physical core |
+
+Then one command does the whole sequence:
 
 ```sh
-sudo scripts/tune.sh
+sudo scripts/tune.sh [--no-offline] [--no-llc] [--wire2app PORT]
 ```
 
 It:
 
-1. Derives housekeeping, poller, hot candidates and logger from the isolated
-   cores (`cores.sh layout`).
+1. Derives the roles above.
 2. Ranks the hot candidates with `corelat` and picks the top row.
 3. Checks the logger core against it with `llcpollute`.
-4. Offlines every other core, including un-isolated HT siblings.
+4. Offlines every other core, including HT siblings of isolated cores.
 5. Re-measures the hot core's clock.
+6. With `--wire2app PORT`, measures NIC-to-app latency on the hot core (needs
+   traffic arriving on that UDP port).
+7. Writes the results and an HTML report.
 
-It also reserves huge pages if they were lost on reboot. Use `--no-offline` to
-only measure; `sudo scripts/cores.sh online` undoes step 4.
+It also reserves huge pages if they were lost on reboot, and writes `tune.env`
+(`source tune.env` for `POLLER`, `BEST`, `LOGGER`, ... in your shell). Use
+`--no-offline` to only measure; `sudo scripts/cores.sh online` undoes step 4.
 
 ## Results and reports
 
@@ -109,6 +137,8 @@ The same steps by hand are in [RUNNING.md](RUNNING.md#5-run-order).
 - On a client Intel chip (Core Ultra 285H) `nt` evicted the victim *more* than
   `memcpy`, at any prefetch distance. Hardware prefetchers still pull the
   source in. Don't assume `nt` helps; measure it on the target box.
+- The steps check the clock with `corelat`'s `clock_GHz`, not `turbostat`:
+  turbostat aborts in its RAPL code on some many-core CPUs.
 - `wire2app` needs RX hardware timestamps and a PHC on the interface. Without
   them it still reports `kern2app`. The PHC offset is sampled 5×/s
   (`PTP_SYS_OFFSET_EXTENDED`, falling back to `PTP_SYS_OFFSET`), under ENA's
