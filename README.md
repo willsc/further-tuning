@@ -2,9 +2,9 @@
 
 Latency tooling for a tuned trading host (EC2 metal, Intel Xeon or AMD EPYC).
 It assumes the usual work is already done: core isolation, C/P-states, uncore,
-CAT, IRQ pinning, DPDK. These tools cover the next layer: picking the hot core,
-keeping a logger from evicting it, measuring the real NIC-to-app path, and
-deciding whether a new host is worth keeping.
+CAT, IRQ pinning, DPDK. It also assumes the instance itself is good. These
+tools cover the next layer: picking the hot core, keeping a logger from
+evicting it, and measuring the real NIC-to-app path.
 
 | Tool | What it answers |
 |---|---|
@@ -17,20 +17,29 @@ deciding whether a new host is worth keeping.
 
 **→ Step-by-step setup and usage: [RUNNING.md](RUNNING.md)**
 
-## Build
+## Setup
+
+One command installs the packages, loads the `msr` module, reserves 2048 huge
+pages (4 GiB) and builds `bin/`:
 
 ```sh
-make            # gcc, Linux UAPI headers; x86-64 only
+git clone https://github.com/willsc/further-tuning.git && cd further-tuning
+make setup                 # = sudo scripts/prereqs.sh install (apt or dnf)
+scripts/prereqs.sh         # re-check at any time; [MISS] lines say what to fix
 ```
 
-Reserve 2 MB huge pages first so the cache measurements aren't inflated by
-TLB misses (each tool's footer says `hugetlb-2M` or `thp pages`):
+Use `HUGEPAGES=N make setup` to reserve a different number of pages. Huge pages
+don't survive a reboot, so rerun `make setup` after each boot, or add it to your
+boot scripts. Each tool's footer says `hugetlb-2M` when it got them, or
+`thp pages` when it didn't.
+
+To build only (needs gcc and the libc and Linux UAPI headers; x86-64 only):
 
 ```sh
-echo 2048 | sudo tee /proc/sys/vm/nr_hugepages
+make
 ```
 
-## Workflow on a new host
+## Workflow
 
 ```sh
 # 1. Offline cores you don't use so the busy ones get turbo headroom
