@@ -15,6 +15,8 @@ deciding whether a new host is worth keeping.
 | `scripts/hostcheck.py` | Run the osnoise, SMI and gateway-RTT checks on a fresh host, then decide keep or recycle, and rank hosts. |
 | `scripts/cores.sh` | Offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
+**→ Step-by-step setup and usage: [RUNNING.md](RUNNING.md)**
+
 ## Build
 
 ```sh
