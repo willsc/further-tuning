@@ -12,7 +12,7 @@ bin/%: src/%.c src/common.h src/fastcopy.h | bin
 bin:
 	mkdir -p bin
 
-# One-shot host setup: packages, msr, tracefs, huge pages, build.
+# One-shot host setup: packages, msr, huge pages, build.
 setup:
 	sudo scripts/prereqs.sh install
 

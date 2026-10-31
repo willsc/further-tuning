@@ -19,8 +19,9 @@ DPDK.
 - **Keep it warm.** Between real events, replay ticks through the full decision
   path and drop the order at the last step. That way the first real tick after
   a quiet spell doesn't hit cold caches.
-- **Find leftover noise.** Run `rtla osnoise` on the isolated cores to see what
-  still interrupts them (`scripts/hostcheck.py --cpus ...`). Two common fixes
+- **Find leftover noise.** Run `rtla osnoise top -c <cpus>` (or the kernel's
+  osnoise tracer directly) on the isolated cores to see what still interrupts
+  them. Two common fixes
   are `mce=ignore_ce` (you lose corrected-ECC logging) and unbinding unused
   NVMe drives and ENIs.
 
@@ -43,7 +44,7 @@ DPDK.
 
 - **Host and gateway lottery.** Launch several metal hosts in the venue's AZ ID
   and measure RTT to every gateway IP behind its DNS
-  (`scripts/hostcheck.py --gateway host:port`, then `--rank`). Keep the fastest
+  (e.g. time TCP handshakes to each IP). Keep the fastest
   and recycle the rest. Nitro can add a nanosecond hardware timestamp to every
   inbound packet before the kernel sees it, and this works on bare metal too.
   That lets you separate network delay from host delay (`wire2app`).

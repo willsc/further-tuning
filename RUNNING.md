@@ -23,22 +23,21 @@ check in order. For how to *interpret* the results, see the guides in
 **Packages** (Ubuntu/Debian names; on Amazon Linux use `dnf` equivalents):
 
 ```sh
-sudo apt install build-essential msr-tools ethtool iproute2 python3 \
+sudo apt install build-essential msr-tools ethtool iproute2 \
                  linux-tools-common linux-tools-$(uname -r)    # turbostat
 ```
 
 | Needed for | Package / tool |
 |---|---|
 | Building | `gcc`, `make`, kernel UAPI headers (`linux-libc-dev`) |
-| `hostcheck.py` noise check | kernel osnoise tracer + tracefs (no `rtla` needed) |
 | SMI count | `msr` kernel module, Intel only |
 | Prefetcher toggle | `rdmsr` / `wrmsr` (`msr-tools`), Intel only |
 | Turbo headroom check | `turbostat` |
 | ENA PHC enable | `devlink` (`iproute2`) |
 | DSA rows in `llcpollute` | `accel-config` (optional, Intel Sapphire Rapids or newer) |
 
-Or do the whole setup in one go (packages, `msr` module, tracefs, 2048 huge
-pages, `make`):
+Or do the whole setup in one go (packages, `msr` module, 2048 huge pages,
+`make`):
 
 ```sh
 make setup                      # = sudo scripts/prereqs.sh install
@@ -141,28 +140,7 @@ The examples below use this layout. Substitute your own:
 
 ## 4. Run order on a new host
 
-### Step 1: Keep or recycle the host?
-
-Run 60 s of noise measurement on the isolated cores, count SMIs, and time TCP
-handshakes to every IP behind each venue gateway:
-
-```sh
-sudo scripts/hostcheck.py --cpus 3-7 \
-     --gateway fix.venue-a.example:443 --gateway md.venue-a.example:9000 \
-     --max-single-us 10 --max-rtt-us 80
-echo $?          # 0 = keep, 1 = recycle, 2 = error
-```
-
-Every run is appended to `hostcheck.jsonl`. After you've checked several
-hosts (copy the log lines into one file), rank them:
-
-```sh
-scripts/hostcheck.py --rank --log hostcheck.jsonl
-```
-
-Keep the fastest, terminate the rest.
-
-### Step 2: Offline spare cores
+### Step 1: Offline spare cores
 
 With `idle=poll` every online core is busy. Offlining unused cores and the HT
 siblings of hot cores gives the busy ones turbo headroom:
@@ -173,7 +151,7 @@ sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz,CPU%c6 sleep 5
 sudo scripts/cores.sh online               # undo
 ```
 
-### Step 3: Pick the hot core
+### Step 2: Pick the hot core
 
 ```sh
 bin/corelat -b 2 -c 3-7          # run it twice; ignore gaps smaller than run-to-run spread
@@ -183,7 +161,7 @@ bin/corelat -b 2 -c 3-7 -s 2g    # optional: DRAM latency instead of L3
 Takes a few seconds per core. Pick the top row (lowest `c2c_ns_from_base`,
 then `chase_ns`, then highest `clock_GHz`). → [docs/reading-corelat.md](docs/reading-corelat.md)
 
-### Step 4: Check the logger won't evict the hot core
+### Step 3: Check the logger won't evict the hot core
 
 The copier must share the hot core's L3 (same socket on Intel, same CCD on AMD),
 or the test shows nothing:
@@ -195,14 +173,14 @@ sudo bin/llcpollute -v 3 -c 8 -l 8m -s 1g -t 5
 Takes about `-t` seconds per method (5 methods → ~25 s). Compare each row to
 `idle`. → [docs/reading-llcpollute.md](docs/reading-llcpollute.md)
 
-### Step 5: Optional prefetcher A/B (Intel)
+### Step 4: Optional prefetcher A/B (Intel)
 
 ```sh
 sudo scripts/cores.sh prefetch off 3     # measure your hot loop / wire2app
 sudo scripts/cores.sh prefetch on 3      # measure again; keep whichever wins
 ```
 
-### Step 6: Confirm with real NIC-to-app latency
+### Step 5: Confirm with real NIC-to-app latency
 
 You need traffic arriving on the interface: either the live feed, or test
 traffic from a second host in the same placement group.
@@ -288,23 +266,6 @@ Send mode: `-S HOST:PORT` plus `-r PPS` (default 10000), `-z BYTES`
 
 (Illustrative numbers, not a real ENA run. `w2a` = wire to app; `wire2kern` + `kern2app` ≈ `w2a`.)
 
-### `scripts/hostcheck.py`
-
-| Flag | Meaning | Default |
-|---|---|---|
-| `--cpus LIST` | Isolated cores to check for noise | none |
-| `--duration SEC` | osnoise / SMI window | `60` |
-| `--gateway HOST:PORT` | Venue gateway; repeatable; every A record is tested | none |
-| `--samples N` | TCP handshakes per IP | `20` |
-| `--max-single-us N` | Recycle if any single interruption exceeds this | `10` |
-| `--max-smi N` | Recycle if more SMIs than this | `0` |
-| `--max-rtt-us N` | Recycle if best gateway p50 RTT exceeds this | no limit |
-| `--log FILE` | JSON-lines results log | `hostcheck.jsonl` |
-| `--rank` | Rank all hosts in `--log` and exit | |
-
-Give at least one of `--cpus` / `--gateway`. The gateway must accept TCP
-connections on that port.
-
 ### `scripts/cores.sh`
 
 ```sh
@@ -341,7 +302,3 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 | `wire2app`: `could not enable RX hardware timestamps` | Run as root; check `ethtool -T IFACE` supports hardware-receive. |
 | `wire2app`: `no PHC offset` | PHC not enabled. Redo [3.3](#33-enable-the-ena-phc-and-hardware-timestamps-for-wire2app). Only `kern2app` is reported until then. |
 | `wire2app`: `pkts` is 0 for a core | No traffic reached the port within `-T`. Check the sender, security groups, and `ss -ulpn`. |
-| `hostcheck.py`: `kernel has no osnoise tracer` | Kernel built without `CONFIG_OSNOISE_TRACER`; use a stock Ubuntu/AL2023 kernel. |
-| `hostcheck.py`: `tracer '…' is in use` | Another tracer is active; `echo nop > /sys/kernel/tracing/current_tracer`. |
-| `hostcheck.py`: `smi: unavailable` | AMD (no MSR 0x34), or run `modprobe msr`. |
-| `hostcheck.py`: `0/20 ok` for a gateway | Port closed/filtered from this host. Use the venue's real order-entry or feed port. |

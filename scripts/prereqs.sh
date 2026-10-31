@@ -3,7 +3,7 @@
 #
 #   prereqs.sh            report what is present / missing
 #   prereqs.sh install    one-shot host setup: install packages (apt or dnf),
-#                         load msr, mount tracefs, reserve huge pages, build
+#                         load msr, reserve huge pages, build
 #                         bin/, then re-check
 #
 #   HUGEPAGES=N           2 MB pages to reserve on install (default 2048 = 4 GiB)
@@ -30,10 +30,9 @@ install() {
 	if command -v apt-get >/dev/null; then
 		apt-get update
 		DEBIAN_FRONTEND=noninteractive apt-get install -y \
-			build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 python3 \
+			build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 \
 			linux-tools-common
-		# Kernel-specific tools (turbostat, optional). hostcheck.py drives the
-		# osnoise tracer itself, so rtla is not needed (AWS kernels lack it).
+		# Kernel-specific tools (turbostat, optional).
 		if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-tools-$kver"; then
 			echo "warning: linux-tools-$kver not in the archive; trying generic meta packages" >&2
 		fi
@@ -45,7 +44,7 @@ install() {
 		esac
 		apt-get install -y accel-config 2>/dev/null || true   # optional (DSA)
 	elif command -v dnf >/dev/null; then
-		dnf install -y gcc make glibc-devel kernel-headers msr-tools ethtool iproute python3 \
+		dnf install -y gcc make glibc-devel kernel-headers msr-tools ethtool iproute \
 			kernel-tools || true
 		dnf install -y accel-config 2>/dev/null || true
 	else
@@ -53,9 +52,6 @@ install() {
 		exit 2
 	fi
 	modprobe msr 2>/dev/null || true
-	if ! [[ -e /sys/kernel/tracing/available_tracers ]]; then
-		mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null || true
-	fi
 	hp=${HUGEPAGES:-2048}
 	if (( $(cat /proc/sys/vm/nr_hugepages) < hp )); then
 		echo "$hp" > /proc/sys/vm/nr_hugepages
@@ -76,24 +72,12 @@ command -v make >/dev/null && ok make || bad make "build-essential"
 [[ -f /usr/include/linux/ptp_clock.h ]] && ok "kernel UAPI headers" \
 	|| bad "kernel UAPI headers" "linux-libc-dev / kernel-headers"
 
-echo "hostcheck.py:"
-command -v python3 >/dev/null && ok python3 || bad python3
-osn=0
-for d in /sys/kernel/tracing /sys/kernel/debug/tracing; do
-	grep -qw osnoise "$d/available_tracers" 2>/dev/null && osn=1
-done
-(( osn )) && ok "osnoise tracer" \
-	|| bad "osnoise tracer" "run as root with tracefs mounted; kernel needs CONFIG_OSNOISE_TRACER"
-if [[ -d /sys/kernel/tracing/events || -d /sys/kernel/debug/tracing/events ]]; then
-	ok tracefs
-else
-	bad tracefs "mount -t tracefs nodev /sys/kernel/tracing"
-fi
+echo "cores.sh (prefetch toggle):"
 if grep -q -m1 GenuineIntel /proc/cpuinfo; then
 	command -v rdmsr >/dev/null && ok rdmsr || bad rdmsr "msr-tools (cores.sh prefetch toggle)"
 	[[ -e /dev/cpu/0/msr ]] && ok "msr module" || bad "msr module" "modprobe msr"
 else
-	opt rdmsr "not Intel: SMI count and prefetch toggle unavailable"
+	opt rdmsr "not Intel: prefetch toggle unavailable"
 fi
 
 echo "other tools:"

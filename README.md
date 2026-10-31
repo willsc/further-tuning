@@ -12,7 +12,6 @@ deciding whether a new host is worth keeping.
 | `bin/llcpollute` | Does the logger's copy loop evict the hot core's L3 data, and does `nt_copy()` or DSA fix it? |
 | `bin/wire2app` | NIC hardware RX stamp → app latency on each candidate core (has the final say). |
 | `src/fastcopy.h` | `nt_copy()` and `dsa_memmove()` for the logger, header-only. |
-| `scripts/hostcheck.py` | Run the osnoise, SMI and gateway-RTT checks on a fresh host, then decide keep or recycle, and rank hosts. |
 | `scripts/prereqs.sh` | Check prerequisites, or `install` for one-shot host setup (also `make setup`). |
 | `scripts/cores.sh` | Offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
@@ -34,21 +33,17 @@ echo 2048 | sudo tee /proc/sys/vm/nr_hugepages
 ## Workflow on a new host
 
 ```sh
-# 1. Is the host worth keeping? (60 s of osnoise on the isolated cores + gateway RTT)
-sudo scripts/hostcheck.py --cpus 2-7 --gateway fix.venue.example:443 --max-rtt-us 80
-scripts/hostcheck.py --rank            # compare every host launched so far
-
-# 2. Offline cores you don't use so the busy ones get turbo headroom
+# 1. Offline cores you don't use so the busy ones get turbo headroom
 sudo scripts/cores.sh offline 0-1,2,3,4   # housekeeping + poller + hot cores
 sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz sleep 5
 
-# 3. Rank hot-core candidates against the poller (base) core
+# 2. Rank hot-core candidates against the poller (base) core
 sudo bin/corelat -b 2 -c 3-7
 
-# 4. Will the logger hurt the hot core? Copier on the same socket/CCD.
+# 3. Will the logger hurt the hot core? Copier on the same socket/CCD.
 sudo bin/llcpollute -v 3 -c 6 -l 8m -s 1g
 
-# 5. Confirm on the real path, with market data or test traffic flowing
+# 4. Confirm on the real path, with market data or test traffic flowing
 bin/wire2app -S 10.0.0.5:9000 -r 20000          # on another host
 sudo bin/wire2app -i ens5 -p 9000 -c 3-5 -H 1   # on this host
 ```
