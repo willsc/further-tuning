@@ -27,7 +27,7 @@ install() {
 	if command -v apt-get >/dev/null; then
 		apt-get update
 		DEBIAN_FRONTEND=noninteractive apt-get install -y \
-			build-essential linux-libc-dev msr-tools ethtool iproute2 python3 \
+			build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 python3 \
 			linux-tools-common
 		# Kernel-specific tools (rtla, turbostat). On AWS kernels also pull
 		# the meta package so future kernel updates keep them.
@@ -42,7 +42,7 @@ install() {
 		esac
 		apt-get install -y accel-config 2>/dev/null || true   # optional (DSA)
 	elif command -v dnf >/dev/null; then
-		dnf install -y gcc make kernel-headers msr-tools ethtool iproute python3 \
+		dnf install -y gcc make glibc-devel kernel-headers msr-tools ethtool iproute python3 \
 			kernel-tools || true
 		dnf install -y rtla || true
 		dnf install -y accel-config 2>/dev/null || true
@@ -63,6 +63,8 @@ echo "kernel $kver"
 echo "build:"
 command -v gcc  >/dev/null && ok gcc  || bad gcc  "build-essential"
 command -v make >/dev/null && ok make || bad make "build-essential"
+[[ -f /usr/include/errno.h ]] && ok "libc headers" \
+	|| bad "libc headers" "libc6-dev (build-essential) / glibc-devel"
 [[ -f /usr/include/linux/ptp_clock.h ]] && ok "kernel UAPI headers" \
 	|| bad "kernel UAPI headers" "linux-libc-dev / kernel-headers"
 
