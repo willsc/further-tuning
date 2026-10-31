@@ -63,7 +63,12 @@ echo
 echo "== 2. corelat: hot candidates $HOT vs poller $POLLER"
 out=$(bin/corelat -b "$POLLER" -c "$HOT")
 echo "$out" | tee "$run/corelat.txt"
-BEST=$(awk '$1 ~ /^[0-9]+$/ {print $1; exit}' <<<"$out")
+# Lowest c2c among cores within 5% of the fastest clock, so a slow core
+# (E-core on hybrid parts, or a throttled one) never wins on c2c alone.
+BEST=$(awk '$1 ~ /^[0-9]+$/ { cpu[++n] = $1; ghz[n] = $5; if ($5 > max) max = $5 }
+	END { for (i = 1; i <= n; i++) if (ghz[i] >= 0.95 * max) { print cpu[i]; exit } }' <<<"$out")
+top=$(awk '$1 ~ /^[0-9]+$/ {print $1; exit}' <<<"$out")
+[[ $BEST == "$top" ]] || echo "note: cpu $top has the lowest c2c but a clock >5% below the fastest core; using cpu $BEST"
 [[ -n $BEST ]] || { echo "could not read a winner from corelat" >&2; exit 2; }
 read -r best_l3 best_clk < <(awk -v c="$BEST" '$1 == c {print $2, $5; exit}' <<<"$out")
 echo "-> hot core: $BEST (l3_id $best_l3, ${best_clk} GHz)"

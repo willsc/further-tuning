@@ -142,6 +142,10 @@ def summary(run):
         ok = [r for r in run["w2a"] if r["p50"] is not None]
         if ok:
             s["w2a_best"] = min(ok, key=lambda r: r["p50"])
+        else:
+            k = [r for r in run["w2a"] if r["k2a"] is not None]
+            if k:
+                s["k2a_best"] = min(k, key=lambda r: r["k2a"])
     return s
 
 
@@ -391,6 +395,16 @@ __BODY__
       }
     });
   }
+  var k = document.getElementById("chart-k2a");
+  if (k && D.w2a.length) {
+    hbar(k, {
+      aria: "Kernel-to-app latency per core",
+      cats: D.w2a.map(function (r) { return "cpu " + r.cpu; }),
+      series: [{name: "kernel→app p50", color: "var(--s1)", values: D.w2a.map(function (r) { return r.k2a; }), digits: 0}],
+      unit: "ns",
+      tipExtra: function (ci) { return "<div class='muted'>" + D.w2a[ci].pkts + " pkts</div>"; }
+    });
+  }
   var h = document.getElementById("chart-history");
   if (h && D.runs && D.runs.length) {
     var hr = D.runs.filter(function (r) { return r.c2c != null; });
@@ -467,6 +481,10 @@ def render_run(run):
         r = s["w2a_best"]
         tiles.append(tile("Wire to app p50", f"{f1(r['p50'], 0)} ns",
                           f"cpu {r['cpu']} · p99 {f1(r['p99'], 0)} ns"))
+    if s.get("k2a_best"):
+        r = s["k2a_best"]
+        tiles.append(tile("Kernel to app p50", f"{f1(r['k2a'], 0)} ns",
+                          f"cpu {r['cpu']} · no NIC hardware stamps"))
     if tiles:
         b.append("<div class='tiles'>" + "".join(tiles) + "</div>")
 
@@ -483,7 +501,8 @@ def render_run(run):
         rows = run["corelat"]
         b.append("<section class='card'><h2>Core-to-core latency from the poller</h2>"
                  "<p class='sub'>Lower is better. One cache line bounced between the poller and each "
-                 "candidate core. The top row became the hot core.</p>"
+                 "candidate core. The hot core is the lowest-latency one within 5% of the fastest clock "
+                 "(hover a bar for its clock).</p>"
                  "<div class='legend'><span><i style='background:var(--s1)'></i>Shares the poller's L3</span>"
                  "<span><i style='background:var(--other)'></i>Other L3</span></div>"
                  "<div class='chart' id='chart-corelat'></div>"
@@ -516,7 +535,18 @@ def render_run(run):
                        [[r["cpu"], f1(r["c2c"]), f1(r["chase"]), f1(r["ghz"], 2)] for r in run["after"]]) +
                  f"<p class='muted'>{esc(run['after_footer'])}</p></section>")
 
-    if run["w2a"]:
+    hw = any(r["p50"] is not None for r in run["w2a"])
+    if run["w2a"] and not hw:
+        b.append("<section class='card'><h2>Kernel to app latency</h2>"
+                 "<p class='sub'>No NIC hardware RX timestamps or PHC on "
+                 f"<code>{esc(env.get('IFACE'))}</code>, so only the kernel-to-app part is measured "
+                 "(software RX stamp to the app). Enable the PHC (RUNNING.md 4.3) for full wire-to-app.</p>"
+                 "<div class='chart' id='chart-k2a'></div>"
+                 "<details><summary>Table view</summary>" +
+                 table(["cpu", "pkts", "kernel→app p50 ns"],
+                       [[r["cpu"], r["pkts"], f1(r["k2a"], 0)] for r in run["w2a"]]) +
+                 f"<p class='muted'>{esc(run['w2a_footer'])}</p></details></section>")
+    elif run["w2a"]:
         b.append("<section class='card'><h2>Wire to app latency</h2>"
                  "<p class='sub'>NIC hardware RX timestamp to the app, per core. Lowest p50 with a tight "
                  "p99 wins; this overrides the core-to-core ranking.</p>"
