@@ -14,7 +14,7 @@ bin:
 
 # One-shot host setup: packages, msr, huge pages, build.
 setup:
-	sudo scripts/prereqs.sh install
+	sudo HUGEPAGES=$${HUGEPAGES:-2048} scripts/prereqs.sh install
 
 clean:
 	rm -rf bin
