@@ -1,19 +1,63 @@
 # How to run
 
-A step-by-step guide to building the tools, preparing a host, and running each
-check in order. For how to *interpret* the results, see the guides in
-[docs/](docs/).
+A step-by-step guide to setting up a host, building the tools, and running each
+check in order. It assumes the instance itself is good; these steps tune and
+measure it rather than decide whether to keep it. For how to *interpret* the
+results, see the guides in [docs/](docs/).
 
-- [1. Prerequisites](#1-prerequisites)
-- [2. Build](#2-build)
-- [3. One-time host setup](#3-one-time-host-setup)
-- [4. Run order on a new host](#4-run-order-on-a-new-host)
-- [5. Tool reference](#5-tool-reference)
-- [6. Troubleshooting](#6-troubleshooting)
+- [1. Quick setup](#1-quick-setup)
+- [2. Prerequisites (manual)](#2-prerequisites-manual)
+- [3. Build (manual)](#3-build-manual)
+- [4. Host setup](#4-host-setup)
+- [5. Run order](#5-run-order)
+- [6. Tool reference](#6-tool-reference)
+- [7. Troubleshooting](#7-troubleshooting)
 
 ---
 
-## 1. Prerequisites
+## 1. Quick setup
+
+On a fresh x86-64 Linux host (EC2 metal, Intel Xeon or AMD EPYC, is the target),
+as root or with `sudo`:
+
+```sh
+git clone https://github.com/willsc/further-tuning.git && cd further-tuning
+make setup                 # = sudo scripts/prereqs.sh install
+```
+
+`make setup` does, in order:
+
+1. Installs the packages listed in [section 2](#2-prerequisites-manual) with
+   `apt` or `dnf`, including `linux-tools` for the running kernel (for
+   `turbostat`).
+2. Loads the `msr` module.
+3. Reserves 2048 huge pages (4 GiB). Use `HUGEPAGES=N make setup` for a
+   different number.
+4. Builds `bin/`.
+5. Re-checks everything and prints `[ok]`, `[MISS]` or `[opt]` per item.
+
+Check the host again at any time without changing it:
+
+```sh
+scripts/prereqs.sh         # exit 0 = everything required present
+```
+
+`[MISS]` lines are required and say how to fix them. `[opt]` lines are optional
+features.
+
+Huge pages and the `msr` module don't survive a reboot, so rerun `make setup`
+after each boot, or add it to your AMI or boot scripts. It's safe to rerun.
+
+After `make setup`, do the manual steps in [4.3](#43-enable-the-ena-phc-and-hardware-timestamps-for-wire2app)
+(PHC, for `wire2app`), optionally [4.4](#44-optional-configure-a-dsa-work-queue-intel-for-llcpollute)
+(DSA), and [4.5](#45-know-your-core-layout) (core layout). Then go to the
+[run order](#5-run-order).
+
+---
+
+## 2. Prerequisites (manual)
+
+Skip this if you ran `make setup`.
 
 **Hardware / OS**
 
@@ -23,33 +67,25 @@ check in order. For how to *interpret* the results, see the guides in
 **Packages** (Ubuntu/Debian names; on Amazon Linux use `dnf` equivalents):
 
 ```sh
-sudo apt install build-essential msr-tools ethtool iproute2 \
+sudo apt install build-essential libc6-dev linux-libc-dev msr-tools ethtool iproute2 \
                  linux-tools-common linux-tools-$(uname -r)    # turbostat
 ```
 
 | Needed for | Package / tool |
 |---|---|
-| Building | `gcc`, `make`, kernel UAPI headers (`linux-libc-dev`) |
-| SMI count | `msr` kernel module, Intel only |
-| Prefetcher toggle | `rdmsr` / `wrmsr` (`msr-tools`), Intel only |
-| Turbo headroom check | `turbostat` |
-| ENA PHC enable | `devlink` (`iproute2`) |
+| Building | `gcc`, `make`, libc headers (`libc6-dev`), kernel UAPI headers (`linux-libc-dev`) |
+| Prefetcher toggle | `rdmsr` / `wrmsr` (`msr-tools`) and the `msr` module, Intel only |
+| Turbo headroom check | `turbostat` (`linux-tools-$(uname -r)`) |
+| ENA PHC enable | `devlink` (`iproute2`), `ethtool` |
 | DSA rows in `llcpollute` | `accel-config` (optional, Intel Sapphire Rapids or newer) |
-
-Or do the whole setup in one go (packages, `msr` module, 2048 huge pages,
-`make`):
-
-```sh
-make setup                      # = sudo scripts/prereqs.sh install
-scripts/prereqs.sh              # re-check any time
-```
 
 ---
 
-## 2. Build
+## 3. Build (manual)
+
+Skip this if you ran `make setup`.
 
 ```sh
-git clone <this repo> further-tuning && cd further-tuning
 make
 ls bin/        # corelat  llcpollute  wire2app
 ```
@@ -58,11 +94,12 @@ ls bin/        # corelat  llcpollute  wire2app
 
 ---
 
-## 3. One-time host setup
+## 4. Host setup
 
 Do these after each boot (or bake them into your AMI / boot scripts).
+`make setup` already does 4.1 and 4.2.
 
-### 3.1 Reserve 2 MB huge pages
+### 4.1 Reserve 2 MB huge pages
 
 `corelat` and `llcpollute` allocate their buffers from huge pages so TLB misses
 don't distort the cache numbers. Reserve enough for the largest `-s` you'll use
@@ -76,13 +113,13 @@ grep HugePages_Free /proc/meminfo
 If none are free, the tools fall back to transparent huge pages and their
 footer says `(thp pages)` instead of `hugetlb-2M`.
 
-### 3.2 Load the MSR driver (Intel)
+### 4.2 Load the MSR driver (Intel)
 
 ```sh
 sudo modprobe msr
 ```
 
-### 3.3 Enable the ENA PHC and hardware timestamps (for `wire2app`)
+### 4.3 Enable the ENA PHC and hardware timestamps (for `wire2app`)
 
 The PHC is off by default on ENA. Find the device's PCI address, turn it on,
 and reload:
@@ -102,7 +139,7 @@ ls /dev/ptp*
 version needs them enabled another way, follow AWS's "hardware packet
 timestamps" docs. `ethtool -T ens5` shows what's supported.
 
-### 3.4 (Optional) Configure a DSA work queue (Intel, for `llcpollute`)
+### 4.4 (Optional) Configure a DSA work queue (Intel, for `llcpollute`)
 
 Needs the IOMMU in scalable mode. Add `intel_iommu=on,sm_on` to the kernel
 command line and reboot. Then:
@@ -118,7 +155,7 @@ ls -l /dev/dsa/wq0.0
 
 Without this, `llcpollute` simply skips the `dsa` and `dsa-llc` rows.
 
-### 3.5 Know your core layout
+### 4.5 Know your core layout
 
 Before choosing CPU numbers, look at the topology:
 
@@ -138,7 +175,7 @@ The examples below use this layout. Substitute your own:
 
 ---
 
-## 4. Run order on a new host
+## 5. Run order
 
 ### Step 1: Offline spare cores
 
@@ -203,7 +240,7 @@ the lowest `w2a_p50_ns` and a tight `w2a_p99_ns` wins. This result overrides
 
 ---
 
-## 5. Tool reference
+## 6. Tool reference
 
 ### `bin/corelat`
 
@@ -266,6 +303,14 @@ Send mode: `-S HOST:PORT` plus `-r PPS` (default 10000), `-z BYTES`
 
 (Illustrative numbers, not a real ENA run. `w2a` = wire to app; `wire2kern` + `kern2app` ≈ `w2a`.)
 
+### `scripts/prereqs.sh`
+
+```sh
+scripts/prereqs.sh                       # report only; exit 0 = all required present
+sudo scripts/prereqs.sh install          # one-shot setup (what `make setup` runs)
+sudo HUGEPAGES=4096 scripts/prereqs.sh install   # reserve 8 GiB instead of 4
+```
+
 ### `scripts/cores.sh`
 
 ```sh
@@ -289,16 +334,18 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Footer says `(thp pages)` | No free huge pages. Redo [3.1](#31-reserve-2-mb-huge-pages). |
+| Footer says `(thp pages)` | No free huge pages. Rerun `make setup` (or [4.1](#41-reserve-2-mb-huge-pages)); huge pages are lost on reboot. |
+| `make`: `errno.h: No such file or directory` | libc headers missing. Run `make setup` (or `apt install build-essential libc6-dev`). |
+| `scripts/prereqs.sh` shows `[MISS]` | Run `make setup`; the line says which package or step is missing. |
 | `cannot pin to cpu N` | CPU is offline or outside your cgroup/cpuset. Check `cat /sys/devices/system/cpu/online`. |
 | `corelat` row has much lower clock / higher `chase_ns` than neighbours | Something else runs on that core. Check `top -1` / `ps -eLo psr,comm`. |
-| `llcpollute`: `no DSA work queue` | Expected without DSA. See [3.4](#34-optional-configure-a-dsa-work-queue-intel-for-llcpollute). |
+| `llcpollute`: `no DSA work queue` | Expected without DSA. See [4.4](#44-optional-configure-a-dsa-work-queue-intel-for-llcpollute). |
 | `llcpollute`: `DSA descriptor failed` | WQ not enabled, wrong `--type` (must be `user`), or IOMMU not in SVA mode (`sm_on`). |
 | `llcpollute`: every row ≈ idle | Copier and victim don't share an L3, or `-l` fits in L2. Move `-c` or raise `-l`. |
 | `wire2app`: `could not enable RX hardware timestamps` | Run as root; check `ethtool -T IFACE` supports hardware-receive. |
-| `wire2app`: `no PHC offset` | PHC not enabled. Redo [3.3](#33-enable-the-ena-phc-and-hardware-timestamps-for-wire2app). Only `kern2app` is reported until then. |
+| `wire2app`: `no PHC offset` | PHC not enabled. Redo [4.3](#43-enable-the-ena-phc-and-hardware-timestamps-for-wire2app). Only `kern2app` is reported until then. |
 | `wire2app`: `pkts` is 0 for a core | No traffic reached the port within `-T`. Check the sender, security groups, and `ss -ulpn`. |
