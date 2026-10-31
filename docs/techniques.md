@@ -9,7 +9,7 @@ DPDK.
   Offline the cores you don't use and the HT siblings of your hot cores
   (`scripts/cores.sh offline auto HOT`). AWS's docs explain that idle cores in
   deep sleep are what give one or two busy cores the thermal headroom to reach
-  their highest turbo. Check the result in turbostat.
+  their highest turbo. Check the result with `corelat`'s `clock_GHz` (or turbostat).
 - **Per-core prefetchers.** On Intel, MSR 0x1A4 switches the L1/L2 prefetchers
   off for one core (`wrmsr -p N 0x1a4 0xf`, or `scripts/cores.sh prefetch off N`).
   This can help or hurt a small hot loop, so A/B test it.

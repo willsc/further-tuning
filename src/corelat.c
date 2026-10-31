@@ -199,7 +199,9 @@ int main(int argc, char **argv)
 	chase_head = build_chase(buf, size, 0x9e3779b97f4a7c15ULL);
 
 	struct result *res = calloc(ncpus, sizeof(*res));
-	int n = 0;
+	int n = 0, total = 0;
+	for (int i = 0; i < ncpus; i++)
+		total += cpus[i] != base;
 	for (int i = 0; i < ncpus; i++) {
 		int cpu = cpus[i];
 		if (cpu == base)
@@ -214,7 +216,7 @@ int main(int argc, char **argv)
 		pthread_t th;
 		pthread_create(&th, NULL, measure_on_core, &w);
 		pthread_join(th, NULL);
-		fprintf(stderr, "\rmeasured cpu %d (%d/%d)   ", cpu, n, ncpus - 1);
+		fprintf(stderr, "\rmeasured cpu %d (%d/%d)   ", cpu, n, total);
 	}
 	fprintf(stderr, "\r%40s\r", "");
 

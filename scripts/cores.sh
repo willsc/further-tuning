@@ -12,11 +12,11 @@
 #   cores.sh prefetch off|on CPU  Intel only: L1/L2 prefetchers via MSR 0x1A4
 #   cores.sh status               online CPUs and per-CPU prefetcher MSR
 #
-# Check the turbo headroom afterwards with:
-#   turbostat --quiet --show CPU,Busy%,Bzy_MHz,CPU%c6 sleep 5
+# Check the clock on the hot core afterwards with:
+#   bin/corelat -b POLLER -c HOT
 set -euo pipefail
 
-sys=/sys/devices/system/cpu
+sys=${SYSFS_CPU:-/sys/devices/system/cpu}   # override for testing
 
 expand() {
 	local out=() part a b
@@ -74,9 +74,23 @@ layout() {
 	ISO=$(compress "$(expand "$iso")")
 	declare -A isset=()
 	for c in $(expand "$iso"); do isset[$c]=1; done
+	# HT siblings of isolated cores that GRUB left un-isolated are neither
+	# housekeeping nor hot: they share the hot core's execution units and
+	# turbo budget, so `offline auto` takes them offline.
+	declare -A sibset=()
+	SIBLINGS=""
+	for c in $(expand "$iso"); do
+		[[ -r $sys/cpu$c/topology/thread_siblings_list ]] || continue
+		for k in $(siblings "$c"); do
+			[[ -z ${isset[$k]:-} && -z ${sibset[$k]:-} ]] && { sibset[$k]=1; SIBLINGS+=" $k"; }
+		done
+	done
+	SIBLINGS=$(compress "$SIBLINGS")
 	HOUSEKEEPING=""
 	on=$(expand "$(<"$sys/online")")
-	for c in $on; do [[ -z ${isset[$c]:-} ]] && HOUSEKEEPING+=" $c"; done
+	for c in $on; do
+		[[ -z ${isset[$c]:-} && -z ${sibset[$c]:-} ]] && HOUSEKEEPING+=" $c"
+	done
 	HOUSEKEEPING=$(compress "$HOUSEKEEPING")
 
 	# Prefer isolated cores on the NIC's NUMA node.
@@ -120,8 +134,8 @@ case "${1:-}" in
 layout)
 	layout
 	if [[ ${2:-} == --env ]]; then
-		printf 'ISOLATED=%s\nHOUSEKEEPING=%s\nPOLLER=%s\nHOT=%s\nLOGGER=%s\nIFACE=%s\n' \
-			"$ISO" "$HOUSEKEEPING" "$POLLER" "$HOT" "$LOGGER" "$IFACE"
+		printf 'ISOLATED=%s\nHOUSEKEEPING=%s\nPOLLER=%s\nHOT=%s\nLOGGER=%s\nSIBLINGS=%s\nIFACE=%s\n' \
+			"$ISO" "$HOUSEKEEPING" "$POLLER" "$HOT" "$LOGGER" "$SIBLINGS" "$IFACE"
 		exit 0
 	fi
 	echo "isolated at boot:  $ISO"
@@ -129,6 +143,7 @@ layout)
 	echo "poller:            $POLLER   (NIC queue${IFACE:+, $IFACE NUMA node $NIC_NODE})"
 	echo "hot candidates:    $HOT   (rank these with corelat)"
 	echo "logger / copier:   ${LOGGER:-none}   (shares the poller's L3)"
+	[[ -n $SIBLINGS ]] && echo "HT siblings:       $SIBLINGS   (not isolated in GRUB; offline auto takes them offline)"
 	echo
 	echo "use in a shell:    eval \"\$($0 layout --env)\""
 	;;
@@ -138,6 +153,7 @@ offline)
 	keeplist=$2
 	if [[ $2 == auto ]]; then
 		layout
+		[[ -n ${3:-} ]] || echo "note: no hot cores given; keeping every hot candidate ($HOT)" >&2
 		keeplist="$HOUSEKEEPING,$POLLER,${3:-$HOT}${LOGGER:+,$LOGGER}"
 		echo "keeping $(compress "$(expand "${keeplist#,}")")  (housekeeping $HOUSEKEEPING, poller $POLLER, hot ${3:-$HOT}${LOGGER:+, logger $LOGGER})"
 	fi
@@ -185,7 +201,7 @@ status)
 	fi
 	;;
 *)
-	sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 	;;
 esac

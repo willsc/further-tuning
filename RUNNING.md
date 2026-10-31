@@ -45,7 +45,8 @@ scripts/prereqs.sh         # exit 0 = everything required present
 `[MISS]` lines are required and say how to fix them. `[opt]` lines are optional
 features.
 
-Huge pages and the `msr` module don't survive a reboot, so rerun `make setup`
+Huge pages and the `msr` module don't survive a reboot (`tune.sh` re-reserves
+huge pages itself), so rerun `make setup`
 after each boot, or add it to your AMI or boot scripts. It's safe to rerun.
 
 After `make setup`, do the manual steps in [4.3](#43-enable-the-ena-phc-and-hardware-timestamps-for-wire2app)
@@ -75,7 +76,7 @@ sudo apt install build-essential libc6-dev linux-libc-dev msr-tools ethtool ipro
 |---|---|
 | Building | `gcc`, `make`, libc headers (`libc6-dev`), kernel UAPI headers (`linux-libc-dev`) |
 | Prefetcher toggle | `rdmsr` / `wrmsr` (`msr-tools`) and the `msr` module, Intel only |
-| Turbo headroom check | `turbostat` (`linux-tools-$(uname -r)`) |
+| Optional cross-check of turbo | `turbostat` (`linux-tools-$(uname -r)`); the steps use `corelat`'s `clock_GHz` instead |
 | ENA PHC enable | `devlink` (`iproute2`), `ethtool` |
 | DSA rows in `llcpollute` | `accel-config` (optional, Intel Sapphire Rapids or newer) |
 
@@ -178,19 +179,21 @@ housekeeping:      0-1   (OS, IRQs, PHC sampler)
 poller:            2   (NIC queue, ens5 NUMA node 0)
 hot candidates:    3-6   (rank these with corelat)
 logger / copier:   7   (shares the poller's L3)
+HT siblings:       98-103   (not isolated in GRUB; offline auto takes them offline)
 ```
 
 How the roles are picked:
 
 | Role | Rule |
 |---|---|
-| Housekeeping | Every online CPU that is **not** isolated. |
+| Housekeeping | Every online CPU that is **not** isolated and isn't an HT sibling of an isolated core. |
 | Poller | First isolated core on the NIC's NUMA node (default-route interface; set `IFACE=` to override). |
 | Logger / copier | Last isolated core that shares the poller's L3. Only assigned with 3+ isolated physical cores. |
 | Hot candidates | The remaining isolated cores. |
 
 Only one hardware thread per physical core is used. HT siblings of isolated
-cores are left out, so `offline auto` takes them offline in step 3.
+cores (whether GRUB isolated them or not) get no role, so `offline auto` takes
+them offline in step 3.
 
 Load the roles into your shell once, then the commands below work as written:
 
@@ -205,7 +208,18 @@ echo "poller=$POLLER hot=$HOT logger=$LOGGER"
 
 ## 5. Run order
 
-Run these in a shell where you have already run `eval "$(scripts/cores.sh layout --env)"`.
+**Automated:** steps 1–3 (plus the clock check) in one go:
+
+```sh
+sudo scripts/tune.sh              # --no-offline to only measure, --no-llc to skip llcpollute
+source tune.env                   # POLLER BEST LOGGER HOUSEKEEPING IFACE ... for step 5
+```
+
+It picks the top `corelat` row as `BEST`, reserves huge pages if needed, and
+prints each tool's output as it goes. Then do step 4 (optional) and step 5.
+
+**By hand:** run these in a shell where you have already run
+`eval "$(scripts/cores.sh layout --env)"`.
 
 ### Step 1: Pick the hot core
 
@@ -243,7 +257,7 @@ step 1 because you need to know which hot cores to keep:
 
 ```sh
 sudo scripts/cores.sh offline auto $BEST    # keep housekeeping + poller + logger + BEST
-sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz,CPU%c6 sleep 5
+bin/corelat -b $POLLER -c $BEST             # clock_GHz should match or beat step 1
 sudo scripts/cores.sh online                # undo
 ```
 
@@ -354,6 +368,15 @@ sudo scripts/prereqs.sh install          # one-shot setup (what `make setup` run
 sudo HUGEPAGES=4096 scripts/prereqs.sh install   # reserve 8 GiB instead of 4
 ```
 
+### `scripts/tune.sh`
+
+```sh
+sudo scripts/tune.sh [--no-offline] [--no-llc]
+```
+
+Runs layout → `corelat` → `llcpollute` → `offline auto BEST` → clock check, and
+writes `tune.env`. Uses the same `ISOLATED=` / `IFACE=` overrides as `cores.sh layout`.
+
 ### `scripts/cores.sh`
 
 ```sh
@@ -387,6 +410,8 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 | `make`: `errno.h: No such file or directory` | libc headers missing. Run `make setup` (or `apt install build-essential libc6-dev`). |
 | `scripts/prereqs.sh` shows `[MISS]` | Run `make setup`; the line says which package or step is missing. |
 | `cores.sh layout`: `no isolated cores found` | Nothing isolated at boot. See [4.5](#45-core-layout-from-the-grub-isolated-cores), or set `ISOLATED=` to try a layout. |
+| `turbostat`: `get_rapl_counters: Assertion ... failed` | A turbostat bug with RAPL on some many-core CPUs. Not needed: use `bin/corelat -b $POLLER -c $BEST` and read `clock_GHz`. |
+| `llcpollute` prints its usage | A variable was empty (usually `$BEST`). Use `sudo scripts/tune.sh`, or set `BEST=` from the top `corelat` row. |
 | `$POLLER` / `$HOT` empty in a command | Run `eval "$(scripts/cores.sh layout --env)"` in this shell first. |
 | `cannot pin to cpu N` | CPU is offline or outside your cgroup/cpuset. Check `cat /sys/devices/system/cpu/online`. |
 | `corelat` row has much lower clock / higher `chase_ns` than neighbours | Something else runs on that core. Check `top -1` / `ps -eLo psr,comm`. |

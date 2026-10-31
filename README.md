@@ -12,6 +12,7 @@ evicting it, and measuring the real NIC-to-app path.
 | `bin/llcpollute` | Does the logger's copy loop evict the hot core's L3 data, and does `nt_copy()` or DSA fix it? |
 | `bin/wire2app` | NIC hardware RX stamp → app latency on each candidate core (has the final say). |
 | `src/fastcopy.h` | `nt_copy()` and `dsa_memmove()` for the logger, header-only. |
+| `scripts/tune.sh` | One-shot: layout from the GRUB isolated cores, pick the hot core, check the logger, offline the rest. |
 | `scripts/prereqs.sh` | Check prerequisites, or `install` for one-shot host setup (also `make setup`). |
 | `scripts/cores.sh` | Derive CPU roles from the GRUB isolated cores, offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
@@ -42,29 +43,34 @@ make
 ## Workflow
 
 CPU roles come from the cores isolated on the GRUB command line (`isolcpus=` /
-`nohz_full=`); `cores.sh layout` derives housekeeping, poller, hot candidates
-and logger from them.
+`nohz_full=`). One command does the whole sequence:
 
 ```sh
-# 0. Load the CPU roles from the isolated cores into this shell
-scripts/cores.sh layout                          # show them
-eval "$(scripts/cores.sh layout --env)"          # POLLER HOT LOGGER HOUSEKEEPING IFACE
+sudo scripts/tune.sh
+```
 
-# 1. Rank hot-core candidates against the poller, then note the winner
-bin/corelat -b $POLLER -c $HOT
-BEST=3                                           # top row's cpu
+It:
 
-# 2. Will the logger hurt the hot core? (logger shares the poller's L3)
-sudo bin/llcpollute -v $BEST -c $LOGGER -l 8m -s 1g
+1. Derives housekeeping, poller, hot candidates and logger from the isolated
+   cores (`cores.sh layout`).
+2. Ranks the hot candidates with `corelat` and picks the top row.
+3. Checks the logger core against it with `llcpollute`.
+4. Offlines every other core, including un-isolated HT siblings.
+5. Re-measures the hot core's clock.
 
-# 3. Offline everything else so the busy cores get turbo headroom
-sudo scripts/cores.sh offline auto $BEST         # keeps housekeeping + poller + logger + BEST
-sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz sleep 5
+It also reserves huge pages if they were lost on reboot, and saves the result
+to `tune.env`. Use `--no-offline` to only measure; `sudo scripts/cores.sh online`
+undoes step 4.
 
-# 4. Confirm on the real path, with market data or test traffic flowing
-bin/wire2app -S 10.0.0.5:9000 -r 20000                         # on another host
+Then confirm on the real path, with market data or test traffic flowing:
+
+```sh
+bin/wire2app -S 10.0.0.5:9000 -r 20000                               # on another host
+source tune.env
 sudo bin/wire2app -i $IFACE -p 9000 -c $BEST -H ${HOUSEKEEPING%%[-,]*}   # on this host
 ```
+
+The same steps by hand are in [RUNNING.md](RUNNING.md#5-run-order).
 
 ## Docs
 
