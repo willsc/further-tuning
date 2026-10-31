@@ -36,6 +36,13 @@ sudo apt install build-essential msr-tools ethtool iproute2 python3 \
 | ENA PHC enable | `devlink` (`iproute2`) |
 | DSA rows in `llcpollute` | `accel-config` (optional, Intel Sapphire Rapids or newer) |
 
+Or let the script check and install everything for the running kernel:
+
+```sh
+scripts/prereqs.sh              # report what's missing
+sudo scripts/prereqs.sh install # apt/dnf install, modprobe msr, mount tracefs
+```
+
 ---
 
 ## 2. Build
@@ -332,6 +339,7 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 | `wire2app`: `could not enable RX hardware timestamps` | Run as root; check `ethtool -T IFACE` supports hardware-receive. |
 | `wire2app`: `no PHC offset` | PHC not enabled. Redo [3.3](#33-enable-the-ena-phc-and-hardware-timestamps-for-wire2app). Only `kern2app` is reported until then. |
 | `wire2app`: `pkts` is 0 for a core | No traffic reached the port within `-T`. Check the sender, security groups, and `ss -ulpn`. |
+| `hostcheck.py`: `rtla not found for kernel …` | Ubuntu's `rtla` is a wrapper; install `linux-tools-$(uname -r)` (and `linux-tools-aws`), or `sudo scripts/prereqs.sh install`. |
 | `hostcheck.py`: `rtla osnoise failed` | Run as root; install linux-tools for your kernel; debugfs/tracefs must be mounted. |
 | `hostcheck.py`: `smi: unavailable` | AMD (no MSR 0x34), or run `modprobe msr`. |
 | `hostcheck.py`: `0/20 ok` for a gateway | Port closed/filtered from this host. Use the venue's real order-entry or feed port. |

@@ -14,6 +14,7 @@ Exit status: 0 keep, 1 recycle, 2 error.
 import argparse
 import json
 import os
+import shutil
 import socket
 import statistics
 import subprocess
@@ -60,7 +61,13 @@ def run_osnoise(cpus, seconds):
         ["rtla", "osnoise", "top", "-c", cpus, "-d", f"{seconds}s", "-q"],
         capture_output=True, text=True)
     if out.returncode:
-        raise RuntimeError(f"rtla osnoise failed: {out.stderr.strip()}")
+        err = (out.stderr + out.stdout).strip()
+        if "not found for kernel" in err:
+            raise RuntimeError(
+                "rtla is not installed for this kernel. Install it with:\n"
+                f"  sudo apt install linux-tools-{os.uname().release}\n"
+                "or run: sudo scripts/prereqs.sh install")
+        raise RuntimeError(f"rtla osnoise failed: {err}")
     res = {}
     for line in out.stdout.splitlines():
         f = line.split()
@@ -98,8 +105,14 @@ def check_rtt(gateways, samples):
     res = []
     for gw in gateways:
         host, _, port = gw.rpartition(":")
-        ips = sorted({ai[4][0] for ai in socket.getaddrinfo(
-            host, int(port), socket.AF_INET, socket.SOCK_STREAM)})
+        try:
+            ips = sorted({ai[4][0] for ai in socket.getaddrinfo(
+                host, int(port), socket.AF_INET, socket.SOCK_STREAM)})
+        except (OSError, ValueError) as e:
+            print(f"  {gw}: cannot resolve ({e})", file=sys.stderr)
+            res.append({"gateway": gw, "ip": None, "ok": 0,
+                        "min_us": None, "p50_us": None})
+            continue
         for ip in ips:
             rtts = tcp_rtt_us(ip, int(port), samples)
             res.append({
@@ -112,6 +125,11 @@ def check_rtt(gateways, samples):
 
 def rank(log):
     rows = []
+    if not os.path.exists(log):
+        print(f"no results log '{log}' yet: run a check first "
+              "(e.g. sudo scripts/hostcheck.py --cpus 2-7 --gateway HOST:PORT), "
+              "or point --log at an existing file", file=sys.stderr)
+        return 2
     with open(log) as f:
         for line in f:
             r = json.loads(line)
@@ -143,8 +161,7 @@ def main():
     a = ap.parse_args()
 
     if a.rank:
-        rank(a.log)
-        return 0
+        return rank(a.log) or 0
     if not a.cpus and not a.gateway:
         ap.error("give --cpus and/or --gateway")
 
@@ -156,6 +173,9 @@ def main():
     }
     reasons = []
 
+    if a.cpus and shutil.which("rtla") is None:
+        print("error: rtla not found; run: sudo scripts/prereqs.sh install", file=sys.stderr)
+        return 2
     if a.cpus:
         cpus = expand_cpus(a.cpus)
         smi0 = read_smi(cpus[0])
@@ -186,7 +206,7 @@ def main():
     if a.gateway:
         rec["rtt"] = check_rtt(a.gateway, a.samples)
         for g in rec["rtt"]:
-            print(f"  {g['gateway']:<30} {g['ip']:<16} min {g['min_us']} us  "
+            print(f"  {g['gateway']:<30} {str(g['ip']):<16} min {g['min_us']} us  "
                   f"p50 {g['p50_us']} us  ({g['ok']}/{a.samples} ok)")
         best = [g["p50_us"] for g in rec["rtt"] if g["p50_us"] is not None]
         if not best:

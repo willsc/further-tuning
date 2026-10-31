@@ -13,6 +13,7 @@ deciding whether a new host is worth keeping.
 | `bin/wire2app` | NIC hardware RX stamp → app latency on each candidate core (has the final say). |
 | `src/fastcopy.h` | `nt_copy()` and `dsa_memmove()` for the logger, header-only. |
 | `scripts/hostcheck.py` | Run the osnoise, SMI and gateway-RTT checks on a fresh host, then decide keep or recycle, and rank hosts. |
+| `scripts/prereqs.sh` | Check for (or `install`) the packages and kernel tools everything needs. |
 | `scripts/cores.sh` | Offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
 **→ Step-by-step setup and usage: [RUNNING.md](RUNNING.md)**
