@@ -13,7 +13,7 @@ evicting it, and measuring the real NIC-to-app path.
 | `bin/wire2app` | NIC hardware RX stamp → app latency on each candidate core (has the final say). |
 | `src/fastcopy.h` | `nt_copy()` and `dsa_memmove()` for the logger, header-only. |
 | `scripts/prereqs.sh` | Check prerequisites, or `install` for one-shot host setup (also `make setup`). |
-| `scripts/cores.sh` | Offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
+| `scripts/cores.sh` | Derive CPU roles from the GRUB isolated cores, offline spare cores and HT siblings, and toggle the Intel per-core prefetchers. |
 
 **→ Step-by-step setup and usage: [RUNNING.md](RUNNING.md)**
 
@@ -41,20 +41,29 @@ make
 
 ## Workflow
 
+CPU roles come from the cores isolated on the GRUB command line (`isolcpus=` /
+`nohz_full=`); `cores.sh layout` derives housekeeping, poller, hot candidates
+and logger from them.
+
 ```sh
-# 1. Offline cores you don't use so the busy ones get turbo headroom
-sudo scripts/cores.sh offline 0-1,2,3,4   # housekeeping + poller + hot cores
+# 0. Load the CPU roles from the isolated cores into this shell
+scripts/cores.sh layout                          # show them
+eval "$(scripts/cores.sh layout --env)"          # POLLER HOT LOGGER HOUSEKEEPING IFACE
+
+# 1. Rank hot-core candidates against the poller, then note the winner
+bin/corelat -b $POLLER -c $HOT
+BEST=3                                           # top row's cpu
+
+# 2. Will the logger hurt the hot core? (logger shares the poller's L3)
+sudo bin/llcpollute -v $BEST -c $LOGGER -l 8m -s 1g
+
+# 3. Offline everything else so the busy cores get turbo headroom
+sudo scripts/cores.sh offline auto $BEST         # keeps housekeeping + poller + logger + BEST
 sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz sleep 5
 
-# 2. Rank hot-core candidates against the poller (base) core
-sudo bin/corelat -b 2 -c 3-7
-
-# 3. Will the logger hurt the hot core? Copier on the same socket/CCD.
-sudo bin/llcpollute -v 3 -c 6 -l 8m -s 1g
-
 # 4. Confirm on the real path, with market data or test traffic flowing
-bin/wire2app -S 10.0.0.5:9000 -r 20000          # on another host
-sudo bin/wire2app -i ens5 -p 9000 -c 3-5 -H 1   # on this host
+bin/wire2app -S 10.0.0.5:9000 -r 20000                         # on another host
+sudo bin/wire2app -i $IFACE -p 9000 -c $BEST -H ${HOUSEKEEPING%%[-,]*}   # on this host
 ```
 
 ## Docs

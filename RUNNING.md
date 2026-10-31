@@ -50,7 +50,7 @@ after each boot, or add it to your AMI or boot scripts. It's safe to rerun.
 
 After `make setup`, do the manual steps in [4.3](#43-enable-the-ena-phc-and-hardware-timestamps-for-wire2app)
 (PHC, for `wire2app`), optionally [4.4](#44-optional-configure-a-dsa-work-queue-intel-for-llcpollute)
-(DSA), and [4.5](#45-know-your-core-layout) (core layout). Then go to the
+(DSA), and [4.5](#45-core-layout-from-the-grub-isolated-cores) (core layout). Then go to the
 [run order](#5-run-order).
 
 ---
@@ -155,66 +155,107 @@ ls -l /dev/dsa/wq0.0
 
 Without this, `llcpollute` simply skips the `dsa` and `dsa-llc` rows.
 
-### 4.5 Know your core layout
+### 4.5 Core layout (from the GRUB isolated cores)
 
-Before choosing CPU numbers, look at the topology:
+Everything below takes its CPU numbers from the cores you isolated on the kernel
+command line (`isolcpus=`, or `nohz_full=` when `isolcpus=` is absent). If you
+haven't isolated any yet, add for example this to `GRUB_CMDLINE_LINUX` in
+`/etc/default/grub`, then run `sudo update-grub` and reboot:
 
-```sh
-lscpu -e=CPU,CORE,SOCKET,NODE,CACHE      # which CPUs share a core, socket, L3
-cat /sys/devices/system/cpu/isolated      # cores isolated with isolcpus=
+```
+isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7
 ```
 
-The examples below use this layout. Substitute your own:
+Then let `cores.sh` work out the roles:
 
-| Role | CPU |
+```sh
+scripts/cores.sh layout
+```
+
+```
+isolated at boot:  2-7
+housekeeping:      0-1   (OS, IRQs, PHC sampler)
+poller:            2   (NIC queue, ens5 NUMA node 0)
+hot candidates:    3-6   (rank these with corelat)
+logger / copier:   7   (shares the poller's L3)
+```
+
+How the roles are picked:
+
+| Role | Rule |
 |---|---|
-| Housekeeping (OS, IRQs, PHC sampler) | 0–1 |
-| Poller (NIC queue) | 2 |
-| Hot-core candidates | 3–7 |
-| Logger / copier | 8 |
+| Housekeeping | Every online CPU that is **not** isolated. |
+| Poller | First isolated core on the NIC's NUMA node (default-route interface; set `IFACE=` to override). |
+| Logger / copier | Last isolated core that shares the poller's L3. Only assigned with 3+ isolated physical cores. |
+| Hot candidates | The remaining isolated cores. |
+
+Only one hardware thread per physical core is used. HT siblings of isolated
+cores are left out, so `offline auto` takes them offline in step 3.
+
+Load the roles into your shell once, then the commands below work as written:
+
+```sh
+eval "$(scripts/cores.sh layout --env)"   # sets ISOLATED HOUSEKEEPING POLLER HOT LOGGER IFACE
+echo "poller=$POLLER hot=$HOT logger=$LOGGER"
+```
+
+`ISOLATED=2-7 scripts/cores.sh layout` tries a layout without rebooting.
 
 ---
 
 ## 5. Run order
 
-### Step 1: Offline spare cores
+Run these in a shell where you have already run `eval "$(scripts/cores.sh layout --env)"`.
 
-With `idle=poll` every online core is busy. Offlining unused cores and the HT
-siblings of hot cores gives the busy ones turbo headroom:
-
-```sh
-sudo scripts/cores.sh offline 0-8          # list every CPU you want KEPT
-sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz,CPU%c6 sleep 5
-sudo scripts/cores.sh online               # undo
-```
-
-### Step 2: Pick the hot core
+### Step 1: Pick the hot core
 
 ```sh
-bin/corelat -b 2 -c 3-7          # run it twice; ignore gaps smaller than run-to-run spread
-bin/corelat -b 2 -c 3-7 -s 2g    # optional: DRAM latency instead of L3
+bin/corelat -b $POLLER -c $HOT          # run it twice; ignore gaps smaller than run-to-run spread
+bin/corelat -b $POLLER -c $HOT -s 2g    # optional: DRAM latency instead of L3
 ```
 
 Takes a few seconds per core. Pick the top row (lowest `c2c_ns_from_base`,
-then `chase_ns`, then highest `clock_GHz`). → [docs/reading-corelat.md](docs/reading-corelat.md)
-
-### Step 3: Check the logger won't evict the hot core
-
-The copier must share the hot core's L3 (same socket on Intel, same CCD on AMD),
-or the test shows nothing:
+then `chase_ns`, then highest `clock_GHz`) and record it:
 
 ```sh
-sudo bin/llcpollute -v 3 -c 8 -l 8m -s 1g -t 5
+BEST=3                                   # the top row's cpu
+```
+
+→ [docs/reading-corelat.md](docs/reading-corelat.md)
+
+### Step 2: Check the logger won't evict the hot core
+
+The copier must share the hot core's L3 (same socket on Intel, same CCD on AMD),
+or the test shows nothing. `layout` already picked a logger core that does:
+
+```sh
+sudo bin/llcpollute -v $BEST -c $LOGGER -l 8m -s 1g -t 5
 ```
 
 Takes about `-t` seconds per method (5 methods → ~25 s). Compare each row to
 `idle`. → [docs/reading-llcpollute.md](docs/reading-llcpollute.md)
 
+### Step 3: Offline spare cores
+
+With `idle=poll` every online core is busy. Offlining unused cores and the HT
+siblings of hot cores gives the busy ones turbo headroom. This comes after
+step 1 because you need to know which hot cores to keep:
+
+```sh
+sudo scripts/cores.sh offline auto $BEST    # keep housekeeping + poller + logger + BEST
+sudo turbostat --quiet --show CPU,Busy%,Bzy_MHz,CPU%c6 sleep 5
+sudo scripts/cores.sh online                # undo
+```
+
+To keep more than one hot core, list them: `offline auto 3,4`. Without a list,
+`offline auto` keeps every hot candidate and offlines only HT siblings and
+anything else outside the layout.
+
 ### Step 4: Optional prefetcher A/B (Intel)
 
 ```sh
-sudo scripts/cores.sh prefetch off 3     # measure your hot loop / wire2app
-sudo scripts/cores.sh prefetch on 3      # measure again; keep whichever wins
+sudo scripts/cores.sh prefetch off $BEST    # measure your hot loop / wire2app
+sudo scripts/cores.sh prefetch on $BEST     # measure again; keep whichever wins
 ```
 
 ### Step 5: Confirm with real NIC-to-app latency
@@ -228,15 +269,17 @@ On the **sender** host:
 bin/wire2app -S 10.0.1.23:9000 -r 20000 -z 64      # 20k pkts/s, 64-byte payload; Ctrl-C to stop
 ```
 
-On **this** host:
+On **this** host (do this before step 3 if you want to compare every hot
+candidate, since offlined cores can't be measured):
 
 ```sh
-sudo bin/wire2app -i ens5 -p 9000 -c 3-5 -H 1 -n 20000
+sudo bin/wire2app -i $IFACE -p 9000 -c $HOT -H ${HOUSEKEEPING%%[-,]*} -n 20000
 ```
 
 Each core in `-c` is measured in turn (up to `-T` seconds each). The core with
 the lowest `w2a_p50_ns` and a tight `w2a_p99_ns` wins. This result overrides
-`corelat`'s ranking. → [docs/ena.md](docs/ena.md)
+`corelat`'s ranking. `-H` puts the PHC sampler on the first housekeeping core.
+→ [docs/ena.md](docs/ena.md)
 
 ---
 
@@ -314,6 +357,8 @@ sudo HUGEPAGES=4096 scripts/prereqs.sh install   # reserve 8 GiB instead of 4
 ### `scripts/cores.sh`
 
 ```sh
+scripts/cores.sh layout [--env]           # roles from the GRUB isolated cores (ISOLATED= / IFACE= override)
+sudo scripts/cores.sh offline auto [HOT]  # keep housekeeping + poller + logger + HOT
 sudo scripts/cores.sh offline KEEP_LIST   # offline every CPU not in KEEP_LIST
 sudo scripts/cores.sh online              # bring all CPUs back
 sudo scripts/cores.sh prefetch off|on CPU # Intel MSR 0x1A4
@@ -341,6 +386,8 @@ if (dsa_open(&wq, "/dev/dsa/wq0.0") == 0)
 | Footer says `(thp pages)` | No free huge pages. Rerun `make setup` (or [4.1](#41-reserve-2-mb-huge-pages)); huge pages are lost on reboot. |
 | `make`: `errno.h: No such file or directory` | libc headers missing. Run `make setup` (or `apt install build-essential libc6-dev`). |
 | `scripts/prereqs.sh` shows `[MISS]` | Run `make setup`; the line says which package or step is missing. |
+| `cores.sh layout`: `no isolated cores found` | Nothing isolated at boot. See [4.5](#45-core-layout-from-the-grub-isolated-cores), or set `ISOLATED=` to try a layout. |
+| `$POLLER` / `$HOT` empty in a command | Run `eval "$(scripts/cores.sh layout --env)"` in this shell first. |
 | `cannot pin to cpu N` | CPU is offline or outside your cgroup/cpuset. Check `cat /sys/devices/system/cpu/online`. |
 | `corelat` row has much lower clock / higher `chase_ns` than neighbours | Something else runs on that core. Check `top -1` / `ps -eLo psr,comm`. |
 | `llcpollute`: `no DSA work queue` | Expected without DSA. See [4.4](#44-optional-configure-a-dsa-work-queue-intel-for-llcpollute). |

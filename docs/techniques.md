@@ -7,7 +7,7 @@ DPDK.
 
 - **Offline spare cores.** With `idle=poll`, every online core counts as busy.
   Offline the cores you don't use and the HT siblings of your hot cores
-  (`scripts/cores.sh offline KEEP_LIST`). AWS's docs explain that idle cores in
+  (`scripts/cores.sh offline auto HOT`). AWS's docs explain that idle cores in
   deep sleep are what give one or two busy cores the thermal headroom to reach
   their highest turbo. Check the result in turbostat.
 - **Per-core prefetchers.** On Intel, MSR 0x1A4 switches the L1/L2 prefetchers
